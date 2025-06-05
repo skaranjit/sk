@@ -1,42 +1,72 @@
-// cogni_boost/lib/games/tap_the_target_game.dart
 import 'package:flutter/material.dart';
 import 'dart:math';
 
 class TapTheTargetGame extends StatefulWidget {
   final Function(int score)? onGameCompleted;
-  final Function()? onGameFlowFinished; // New callback
+  final Function()? onGameFlowFinished; // Ensure this is declared
 
-  TapTheTargetGame({Key? key, this.onGameCompleted, this.onGameFlowFinished}) : super(key: key);
+  TapTheTargetGame({
+    Key? key,
+    this.onGameCompleted,
+    this.onGameFlowFinished // Add to constructor parameters
+  }) : super(key: key);
+
   @override
   _TapTheTargetGameState createState() => _TapTheTargetGameState();
 }
 
 class _TapTheTargetGameState extends State<TapTheTargetGame> {
   bool _targetVisible = false;
-  Offset _targetPosition = Offset(50, 50); // Default position
-  String _message = "Press 'Start Game' to begin"; // Default message
-  Random _random = Random();
-  Stopwatch _stopwatch = Stopwatch();
+  Offset _targetPosition = Offset(50, 50);
+  String _message = "Press 'Start Game' to begin";
+  final Random _random = Random();
+  final Stopwatch _stopwatch = Stopwatch();
+  Size _screenSize = Size.zero; // To store screen size
+
+  @override
+  void didChangeDependencies() {
+     super.didChangeDependencies();
+     // Get screen size here as MediaQuery is available
+     if (MediaQuery.of(context).size != Size.zero) {
+        _screenSize = MediaQuery.of(context).size;
+     } else {
+        // Fallback if MediaQuery returns zero (less likely here but good for safety)
+        _screenSize = Size(300,500); // Default if everything else fails
+     }
+  }
 
   void _startGame() {
     _stopwatch.reset();
+    _stopwatch.start();
     setState(() {
       _message = "Get ready...";
-      _targetVisible = false; // Hide target initially
+      _targetVisible = false;
     });
 
-    // Short delay before showing the target
-    Future.delayed(Duration(seconds: _random.nextInt(3) + 1), () { // Delay 1-3 seconds
+    Future.delayed(Duration(milliseconds: _random.nextInt(2000) + 500), () { // Delay 0.5-2.5 seconds
       if (!mounted) return;
+
+      // Ensure _screenSize is initialized (it should be by didChangeDependencies)
+      if (_screenSize == Size.zero) {
+         // This is an additional fallback, should ideally not be hit frequently.
+         _screenSize = MediaQuery.of(context).size;
+         if(_screenSize == Size.zero) _screenSize = Size(300,500); // Absolute fallback
+      }
+
+      // Keep target fully within screen bounds, considering target size (60x60)
+      // And some padding from edges (e.g. 10px)
+      double x = _random.nextDouble() * (_screenSize.width - 60 - 20) + 10;
+      // Subtract more for appbar (~56) and potential bottom navigation/banner (~50-100)
+      double y = _random.nextDouble() * (_screenSize.height - 60 - 56 - 100 - 20) + 10;
+
+      _targetPosition = Offset(
+          x.clamp(10.0, _screenSize.width - 70.0),
+          y.clamp(10.0, _screenSize.height - 180.0) // Clamping to ensure visibility
+      );
+
       setState(() {
-        // Get screen dimensions via MediaQuery in build, but for PoC use fixed bounds
-        // Assuming a screen area, for example, 300x500 for positioning
-        double x = _random.nextDouble() * 250; // Keep within some bounds
-        double y = _random.nextDouble() * 400;
-        _targetPosition = Offset(x, y);
         _targetVisible = true;
         _message = "Tap the target!";
-        _stopwatch.start();
       });
     });
   }
@@ -45,51 +75,34 @@ class _TapTheTargetGameState extends State<TapTheTargetGame> {
     if (!_targetVisible) return;
     _stopwatch.stop();
     double reactionTimeMs = _stopwatch.elapsedMilliseconds.toDouble();
-    int score = (5000 - reactionTimeMs.toInt()).clamp(0, 5000) ~/ 10;
+    // Score inversely proportional to time, higher score for faster reaction. Max 500.
+    int score = ( (5000 - reactionTimeMs).clamp(0, 5000) / 10 ).toInt();
 
-    setState(() {
-      _targetVisible = false;
-      _message = "Target Tapped! Score: $score.";
-      // If not in a flow, allow "Play Again"
-      if (widget.onGameFlowFinished == null) {
-        _message += " Play Again?";
-      }
-    });
     widget.onGameCompleted?.call(score);
 
-    print("TapTheTargetGame: Triggering onGameFlowFinished.");
-    widget.onGameFlowFinished?.call();
-  }
-
-  void _startGame() {
-    _stopwatch.reset();
     setState(() {
-      _message = "Get ready...";
-      if (widget.onGameFlowFinished != null) {
-         _message = "Get ready to tap!"; // Slightly different if in a flow
-      }
       _targetVisible = false;
+      _message = "Target Tapped! Score: $score";
     });
 
-    Future.delayed(Duration(seconds: _random.nextInt(3) + 1), () {
-      if (!mounted) return;
-      setState(() {
-        double x = _random.nextDouble() * (MediaQuery.of(context).size.width - 100); // Adjusted for target size
-        double y = _random.nextDouble() * (MediaQuery.of(context).size.height - 200); // Adjusted for target and appbar
-        _targetPosition = Offset(x.clamp(0, double.infinity), y.clamp(0, double.infinity));
-        _targetVisible = true;
-        _message = "Tap the target!";
-        _stopwatch.start();
-      });
+    // If part of a game flow (e.g. Daily Challenge), call the onGameFlowFinished callback.
+    // Add a small delay for the user to see the score message.
+    Future.delayed(Duration(milliseconds: 1500), () {
+       if (!mounted) return;
+       if (widget.onGameFlowFinished != null) {
+         print("TapTheTargetGame: Triggering onGameFlowFinished.");
+         widget.onGameFlowFinished?.call();
+       } else {
+         // If in practice mode, allow starting again
+         setState(() {
+           _message = "$_message. Play Again?";
+         });
+       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    bool showPlayAgainButton = widget.onGameFlowFinished == null && _message.contains("Play Again?");
-    bool showStartButton = !_targetVisible && !_stopwatch.isRunning && !showPlayAgainButton && widget.onGameFlowFinished == null;
-
-
     return Scaffold(
       appBar: AppBar(title: Text('Tap the Target')),
       body: Stack(
@@ -100,10 +113,13 @@ class _TapTheTargetGameState extends State<TapTheTargetGame> {
               children: <Widget>[
                 Text(_message, style: TextStyle(fontSize: 20.0), textAlign: TextAlign.center),
                 SizedBox(height: 20),
-                if (showPlayAgainButton || showStartButton)
+                // Show "Start/Play Again" button only if not mid-game AND (in practice mode OR target not visible after game ended)
+                if (!_stopwatch.isRunning && !_targetVisible && widget.onGameFlowFinished == null)
                   ElevatedButton(
                     onPressed: _startGame,
-                    child: Text(showPlayAgainButton ? 'Play Again' : 'Start Game'),
+                    child: Text((_message.contains("Play Again?") || _message.contains("Target Tapped!")) && widget.onGameFlowFinished == null ?
+                                'Play Again' :
+                                'Start Game'),
                   ),
               ],
             ),

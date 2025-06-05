@@ -2,11 +2,14 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math';
-import '../../services/ad_helper.dart'; // Import AdHelper
+import '../../services/ad_helper.dart';
+import '../../services/score_service.dart'; // Import ScoreService
 
 class SequenceRecallGame extends StatefulWidget {
-  final Function(int score)? onGameCompleted; // Add this
-  SequenceRecallGame({Key? key, this.onGameCompleted}) : super(key: key);
+  final Function(int score)? onGameCompleted;
+  final Function()? onGameFlowFinished; // New callback
+
+  SequenceRecallGame({Key? key, this.onGameCompleted, this.onGameFlowFinished}) : super(key: key);
   @override
   _SequenceRecallGameState createState() => _SequenceRecallGameState();
 }
@@ -15,33 +18,56 @@ class _SequenceRecallGameState extends State<SequenceRecallGame> {
   final List<Color> _availableColors = [Colors.red, Colors.green, Colors.blue, Colors.yellow];
   List<Color> _gameSequence = [];
   List<Color> _playerSequence = [];
-  int _currentLevel = 1;
   String _message = "Memorize the sequence";
   bool _isPlayingSequence = false;
   bool _isPlayerTurn = false;
   late AdHelper _adHelper;
   bool _canRetryWithAd = false;
-  bool _usedRetryWithAdThisTurn = false; // To ensure only one ad retry per mistake
+  bool _usedRetryWithAdThisTurn = false;
+
+  int _currentLevel = 1;
+  int _consecutiveSuccesses = 0;
+  final ScoreService _scoreService = ScoreService();
+  bool _isLoadingDifficulty = true;
 
   @override
   void initState() {
     super.initState();
     _adHelper = AdHelper();
-    _adHelper.loadRewardedAd(); // Load ad on init
-    _generateSequence();
-    _playSequence();
+    _adHelper.loadRewardedAd();
+    _loadDifficultyAndStartGame();
+  }
+
+  Future<void> _loadDifficultyAndStartGame() async {
+    setState(() { _isLoadingDifficulty = true; });
+    Map<String, int> difficultyData = await _scoreService.getSequenceRecallDifficulty();
+    if(mounted) {
+         setState(() {
+             _currentLevel = difficultyData['level']!;
+             _consecutiveSuccesses = difficultyData['consecutiveSuccesses']!;
+             _isLoadingDifficulty = false;
+         });
+         _startGameLogic();
+    }
+  }
+
+  void _startGameLogic(){
+     _message = "Level $_currentLevel. Memorize...";
+     _playerSequence.clear();
+     _generateSequence();
+     _playSequence();
   }
 
   @override
   void dispose() {
-     _adHelper.dispose(); // Dispose ad helper
+     _adHelper.dispose();
      super.dispose();
   }
 
   void _generateSequence() {
     _gameSequence.clear();
     Random random = Random();
-    for (int i = 0; i < _currentLevel + 1; i++) { // Sequence length starts at 2
+    for (int i = 0; i < _currentLevel + 1; i++) {
       _gameSequence.add(_availableColors[random.nextInt(_availableColors.length)]);
     }
   }
@@ -51,40 +77,34 @@ class _SequenceRecallGameState extends State<SequenceRecallGame> {
       _isPlayingSequence = true;
       _isPlayerTurn = false;
       _playerSequence.clear();
-      _message = "Watch carefully...";
+      // Message is set in _startGameLogic or _endGame
     });
 
+    await Future.delayed(Duration(milliseconds: 500)); // Initial pause
+
     for (Color color in _gameSequence) {
-      // For PoC, just a delay. In a real game, you'd flash a color.
-      // This state change is just to illustrate the phase.
-      setState(() { _message = "Displaying: ${color.toString()}"; });
-      await Future.delayed(Duration(milliseconds: 800)); // Time the color is shown
-      setState(() { _message = "Watch carefully..."; });
-      await Future.delayed(Duration(milliseconds: 200)); // Pause between colors
+      setState(() { _message = "Displaying: ${color.toString().split('.').last}"; });
+      await Future.delayed(Duration(milliseconds: 700 - (_currentLevel * 30).clamp(0, 500).toInt())); // Faster with level
+      setState(() { _message = "Level $_currentLevel. Memorize..."; });
+      await Future.delayed(Duration(milliseconds: 150 - (_currentLevel * 10).clamp(0,100).toInt()));
     }
 
     setState(() {
       _isPlayingSequence = false;
       _isPlayerTurn = true;
-      _message = "Your turn! Tap the sequence.";
+      _message = "Level $_currentLevel. Your turn!";
     });
   }
 
   void _onColorTapped(Color color) {
     if (!_isPlayerTurn || _isPlayingSequence) return;
 
-    // Ensure _canRetryWithAd is false when player starts tapping
     if (_isPlayerTurn && _canRetryWithAd) {
-         setState(() {
-             _canRetryWithAd = false;
-         });
+         setState(() { _canRetryWithAd = false; });
     }
 
-    setState(() {
-      _playerSequence.add(color);
-    });
+    setState(() { _playerSequence.add(color); });
 
-    // Check if player's input is correct so far
     for (int i = 0; i < _playerSequence.length; i++) {
       if (_playerSequence[i] != _gameSequence[i]) {
         _endGame(false);
@@ -92,29 +112,60 @@ class _SequenceRecallGameState extends State<SequenceRecallGame> {
       }
     }
 
-    // Check if sequence is complete
     if (_playerSequence.length == _gameSequence.length) {
       _endGame(true);
     }
   }
 
   void _endGame(bool success) {
+    bool canTriggerFlowFinish = false;
+
+    if (success) {
+      _consecutiveSuccesses++;
+      int score = _currentLevel * 10 + _consecutiveSuccesses * 2;
+      widget.onGameCompleted?.call(score);
+
+      if (_consecutiveSuccesses >= 2) {
+        _currentLevel = (_currentLevel < 10) ? _currentLevel + 1 : 10;
+        _consecutiveSuccesses = 0;
+        _message = "Level Up! Now Level $_currentLevel. Score: $score";
+      } else {
+        _message = "Correct! Level: $_currentLevel. Score: $score. Consecutive: $_consecutiveSuccesses/2";
+      }
+      _usedRetryWithAdThisTurn = false;
+      _canRetryWithAd = false;
+      canTriggerFlowFinish = true;
+
+    } else {
+      if (!_usedRetryWithAdThisTurn) {
+        _message = "Incorrect! Watch an ad for an extra try at Level $_currentLevel?";
+        _canRetryWithAd = true;
+        setState(() { _isPlayerTurn = false; });
+        // Save difficulty here because if user quits without watching ad, current state is saved.
+        _scoreService.saveSequenceRecallDifficulty(_currentLevel, _consecutiveSuccesses);
+        // No flow finish yet, ad is offered.
+        return;
+      } else {
+         _currentLevel = (_currentLevel > 1) ? _currentLevel - 1 : 1;
+         _consecutiveSuccesses = 0;
+         _message = "Incorrect. Level dropped to $_currentLevel. Sequence: ${_gameSequence.map((c)=>c.toString().split('.').last).join(', ')}";
+         _canRetryWithAd = false;
+         canTriggerFlowFinish = true;
+      }
+    }
+
+    _scoreService.saveSequenceRecallDifficulty(_currentLevel, _consecutiveSuccesses);
+
+    if (canTriggerFlowFinish) {
+      print("SequenceRecallGame: Triggering onGameFlowFinished.");
+      widget.onGameFlowFinished?.call();
+    }
+
     setState(() {
       _isPlayerTurn = false;
-      if (success) {
-        int score = _currentLevel * 10;
-        _message = "Correct! Well done! Score: $score";
-        widget.onGameCompleted?.call(score);
-        _usedRetryWithAdThisTurn = false; // Reset for next level/game
-        _canRetryWithAd = false;
-      } else {
-        if (!_usedRetryWithAdThisTurn) {
-          _message = "Incorrect! Watch an ad for an extra try?";
-          _canRetryWithAd = true; // Offer ad retry
-        } else {
-          _message = "Incorrect! Game Over. The sequence was ${_gameSequence.map((c)=>c.toString().split('.').last).join(', ')}";
-          _canRetryWithAd = false;
-        }
+      if (canTriggerFlowFinish) { // Reset ad flags if game truly ended for this turn
+         _usedRetryWithAdThisTurn = false;
+         _canRetryWithAd = false;
       }
     });
   }
@@ -122,47 +173,52 @@ class _SequenceRecallGameState extends State<SequenceRecallGame> {
   void _attemptAdRetry() {
     if (_canRetryWithAd) {
       _adHelper.showRewardedAd(() {
-        // User earned reward
-        setState(() {
-          _message = "Ad watched! Try the sequence again.";
-          _playerSequence.clear();
-          _isPlayerTurn = true;
-          _canRetryWithAd = false;
-          _usedRetryWithAdThisTurn = true; // Mark ad as used for this specific mistake
-          // Do not re-play sequence, user has to remember it from before
-        });
+        if(mounted){
+            setState(() {
+              _message = "Ad watched! Try Level $_currentLevel again.";
+              _playerSequence.clear();
+              _isPlayerTurn = true; // Player gets another turn
+              _canRetryWithAd = false;
+              _usedRetryWithAdThisTurn = true;
+            });
+            // IMPORTANT: DO NOT call onGameFlowFinished here. The game continues.
+        }
       });
     }
   }
 
-  void _restartGame({bool nextLevel = false}) { // Modified restart
-     if(nextLevel) {
-         _currentLevel++;
+  void _restartGame() {
+     // This button is mainly for practice mode (when onGameFlowFinished is null)
+     // or if a specific "restart this level" button is desired in flow mode (less common).
+     if(mounted){
+         setState(() {
+             _isLoadingDifficulty = true;
+         });
+         _loadDifficultyAndStartGame(); // Reloads current saved difficulty and starts
      }
-     setState(() {
-         _usedRetryWithAdThisTurn = false; // Reset ad usage status
-         _canRetryWithAd = false;
-         _playerSequence.clear();
-     });
-     _generateSequence();
-     _playSequence(); // This already sets messages and player turn
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoadingDifficulty) {
+      return Scaffold(
+        appBar: AppBar(title: Text('Sequence Recall')),
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
     return Scaffold(
-      appBar: AppBar(title: Text('Sequence Recall')),
+      appBar: AppBar(title: Text('Sequence Recall - Level $_currentLevel')),
       body: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
           Padding(
             padding: const EdgeInsets.all(16.0),
-            child: Text(_message, style: TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold)),
+            child: Text(_message, style: TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
           ),
           if (_isPlayingSequence)
              Padding(
-                 padding: const EdgeInsets.all(16.0),
-                 child: Text("Current Sequence Item (Conceptual): ${_gameSequence.isNotEmpty && _playerSequence.length < _gameSequence.length ? _gameSequence[_playerSequence.length].toString().split('.').last : ''}", style: TextStyle(fontSize:16)),
+                 padding: const EdgeInsets.all(8.0),
+                 child: Text("Watch carefully...", style: TextStyle(fontSize:16, color: Theme.of(context).hintColor)),
              ),
           SizedBox(height: 20),
           Wrap(
@@ -173,30 +229,28 @@ class _SequenceRecallGameState extends State<SequenceRecallGame> {
               return ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: color, minimumSize: Size(80, 80)),
                 onPressed: () => _onColorTapped(color),
-                child: null, // No text on color buttons
+                child: null,
               );
             }).toList(),
           ),
           SizedBox(height: 30),
-          if (!_isPlayingSequence && !_isPlayerTurn) // Show buttons only after sequence played or game over
-             Row(
-                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                 children: [
-                     if (!_canRetryWithAd) // Show normal restart/next only if not in ad retry mode
-                        ElevatedButton(onPressed: () => _restartGame(), child: Text('Restart Level')),
-                     if (_message.startsWith("Correct!"))
-                         ElevatedButton(onPressed: () => _restartGame(nextLevel: true), child: Text('Next Level')),
-                 ],
+          // Button logic: Show "Play Again" if not in a flow or if game is over (no ad pending)
+          // If in a flow (widget.onGameFlowFinished != null), this button might be hidden
+          // as flow is handled by onGameFlowFinished callback.
+          // For PoC, let's assume if onGameFlowFinished is present, GameScreen controls "next".
+          // So this button is for practice mode, or if the game explicitly ends AND is not in a flow.
+          if (!_isPlayingSequence && !_isPlayerTurn && !_canRetryWithAd && widget.onGameFlowFinished == null)
+             ElevatedButton(onPressed: _restartGame, child: Text('Play Again')),
+
+          if (_canRetryWithAd) // Ad retry button
+             ElevatedButton(
+                 onPressed: _attemptAdRetry,
+                 child: Text('Watch Ad for Extra Try'),
+                 style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
              ),
-            if (_canRetryWithAd)
-              Padding(
-                padding: const EdgeInsets.only(top: 10.0),
-                child: ElevatedButton(
-                  onPressed: _attemptAdRetry,
-                  child: Text('Watch Ad for Extra Try'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
-                ),
-              ),
+         SizedBox(height: 10),
+         if (!_isPlayingSequence && !_isPlayerTurn)
+            Text("Consecutive correct at this level: $_consecutiveSuccesses / 2", style: TextStyle(fontSize: 14.0)),
         ],
       ),
     );

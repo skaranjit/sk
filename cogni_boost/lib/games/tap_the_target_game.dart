@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import 'dart:math';
 
 class TapTheTargetGame extends StatefulWidget {
-  final Function(int score)? onGameCompleted; // Add this
-  TapTheTargetGame({Key? key, this.onGameCompleted}) : super(key: key);
+  final Function(int score)? onGameCompleted;
+  final Function()? onGameFlowFinished; // New callback
+
+  TapTheTargetGame({Key? key, this.onGameCompleted, this.onGameFlowFinished}) : super(key: key);
   @override
   _TapTheTargetGameState createState() => _TapTheTargetGameState();
 }
@@ -12,7 +14,7 @@ class TapTheTargetGame extends StatefulWidget {
 class _TapTheTargetGameState extends State<TapTheTargetGame> {
   bool _targetVisible = false;
   Offset _targetPosition = Offset(50, 50); // Default position
-  String _message = "Press 'Start Game' to begin";
+  String _message = "Press 'Start Game' to begin"; // Default message
   Random _random = Random();
   Stopwatch _stopwatch = Stopwatch();
 
@@ -43,30 +45,65 @@ class _TapTheTargetGameState extends State<TapTheTargetGame> {
     if (!_targetVisible) return;
     _stopwatch.stop();
     double reactionTimeMs = _stopwatch.elapsedMilliseconds.toDouble();
-    int score = max(0, (5000 - reactionTimeMs.toInt()) ~/ 10); // Example: score inversely proportional to time
+    int score = (5000 - reactionTimeMs.toInt()).clamp(0, 5000) ~/ 10;
+
     setState(() {
       _targetVisible = false;
-      _message = "Target Tapped! Score: $score. Play Again?";
+      _message = "Target Tapped! Score: $score.";
+      // If not in a flow, allow "Play Again"
+      if (widget.onGameFlowFinished == null) {
+        _message += " Play Again?";
+      }
     });
-    widget.onGameCompleted?.call(score); // Report score
+    widget.onGameCompleted?.call(score);
+
+    print("TapTheTargetGame: Triggering onGameFlowFinished.");
+    widget.onGameFlowFinished?.call();
+  }
+
+  void _startGame() {
+    _stopwatch.reset();
+    setState(() {
+      _message = "Get ready...";
+      if (widget.onGameFlowFinished != null) {
+         _message = "Get ready to tap!"; // Slightly different if in a flow
+      }
+      _targetVisible = false;
+    });
+
+    Future.delayed(Duration(seconds: _random.nextInt(3) + 1), () {
+      if (!mounted) return;
+      setState(() {
+        double x = _random.nextDouble() * (MediaQuery.of(context).size.width - 100); // Adjusted for target size
+        double y = _random.nextDouble() * (MediaQuery.of(context).size.height - 200); // Adjusted for target and appbar
+        _targetPosition = Offset(x.clamp(0, double.infinity), y.clamp(0, double.infinity));
+        _targetVisible = true;
+        _message = "Tap the target!";
+        _stopwatch.start();
+      });
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    bool showPlayAgainButton = widget.onGameFlowFinished == null && _message.contains("Play Again?");
+    bool showStartButton = !_targetVisible && !_stopwatch.isRunning && !showPlayAgainButton && widget.onGameFlowFinished == null;
+
+
     return Scaffold(
       appBar: AppBar(title: Text('Tap the Target')),
-      body: Stack( // Use Stack to position target absolutely
+      body: Stack(
         children: <Widget>[
-          Center( // Message and button centered
+          Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: <Widget>[
                 Text(_message, style: TextStyle(fontSize: 20.0), textAlign: TextAlign.center),
                 SizedBox(height: 20),
-                if (!_targetVisible && !_stopwatch.isRunning) // Show start button if game not active
+                if (showPlayAgainButton || showStartButton)
                   ElevatedButton(
                     onPressed: _startGame,
-                    child: Text(_message.contains("Play Again?") ? 'Play Again' : 'Start Game'),
+                    child: Text(showPlayAgainButton ? 'Play Again' : 'Start Game'),
                   ),
               ],
             ),

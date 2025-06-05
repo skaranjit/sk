@@ -2,5 +2,6 @@
 enum GameType {
   sequenceRecall,
   tapTheTarget,
+  patternRecognition, // New
   // Add more as games are developed
 }
